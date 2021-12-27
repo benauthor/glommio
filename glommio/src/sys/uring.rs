@@ -478,7 +478,7 @@ fn record_stats<Ring: ReactorRing>(
 ) {
     src.wakers.fulfilled_at = Some(Instant::now());
     if let Some(fulfilled) = src.stats_collection.and_then(|x| x.fulfilled) {
-        fulfilled(res, ring.io_stats_mut(), 1);
+        fulfilled(res, &mut ring.io_stats_mut(), 1);
         if let Some(handle) = src.task_queue {
             fulfilled(res, ring.io_stats_for_task_queue_mut(handle), 1);
         }
@@ -487,7 +487,7 @@ fn record_stats<Ring: ReactorRing>(
     let waiters = usize::saturating_sub(src.wakers.waiters.len(), 1);
     if waiters > 0 {
         if let Some(reused) = src.stats_collection.and_then(|x| x.reused) {
-            reused(res, ring.io_stats_mut(), waiters as u64);
+            reused(res, &mut ring.io_stats_mut(), waiters as u64);
             if let Some(handle) = src.task_queue {
                 reused(
                     res,
@@ -622,6 +622,7 @@ trait UringCommon {
     fn submission_queue(&mut self) -> ReactorQueue;
     fn submit_sqes(&mut self) -> io::Result<usize>;
     fn needs_kernel_enter(&self) -> bool;
+    fn needs_submission(&self) -> bool;
     /// None if it wasn't possible to acquire an `sqe`. `Some(true)` if it was
     /// possible and there was something to dispatch. `Some(false)` if there
     /// was nothing to dispatch
@@ -699,9 +700,9 @@ trait UringCommon {
             }
             self.consume_completion_queue(woke);
             cnt += 1;
-            if cnt > 1_000_000 {
+            if cnt > 1_000 {
                 panic!(
-                    "i tried literally a million times but couldn't flush to the {} ring",
+                    "i tried literally a thousand times but couldn't flush to the {} ring",
                     self.name()
                 );
             }
@@ -780,6 +781,10 @@ impl UringCommon for PollRing {
         //
         // So only need to check for that.
         !self.can_sleep()
+    }
+
+    fn needs_submission(&self) -> bool {
+        !self.submission_queue.borrow().submissions.is_empty()
     }
 
     fn submission_queue(&mut self) -> ReactorQueue {
@@ -1026,6 +1031,10 @@ impl UringCommon for SleepableRing {
 
     fn needs_kernel_enter(&self) -> bool {
         self.waiting_submission > 0
+    }
+
+    fn needs_submission(&self) -> bool {
+        !self.submission_queue.borrow().submissions.is_empty()
     }
 
     fn submission_queue(&mut self) -> ReactorQueue {
@@ -1562,13 +1571,13 @@ impl Reactor {
         preempt_timer: Preempt,
         user_timer: Option<Duration>,
         mut woke: usize,
-        process_remote_channels: F,
+        poll_external_events: F,
     ) -> io::Result<bool>
     where
         Preempt: Fn() -> Option<Duration>,
         F: Fn() -> usize,
     {
-        woke += self.flush_syscall_thread();
+        woke += poll_external_events();
 
         let mut poll_ring = self.poll_ring.borrow_mut();
         let mut main_ring = self.main_ring.borrow_mut();
@@ -1625,8 +1634,7 @@ impl Reactor {
             // details. This translates to `sys_membarrier()` /
             // `MEMBARRIER_CMD_PRIVATE_EXPEDITED`
             membarrier::heavy();
-            let events = process_remote_channels() + self.flush_syscall_thread();
-            if events == 0 {
+            if poll_external_events() == 0 {
                 if self.eventfd_src.is_installed().unwrap() {
                     self.link_rings_and_sleep(&mut main_ring)
                         .expect("some error");
@@ -1743,11 +1751,15 @@ impl Reactor {
         }
     }
 
+    pub fn needs_expedited_kernel_enter(&self) -> bool {
+        self.latency_ring.borrow().needs_submission()
+    }
+
     pub fn io_stats(&self) -> IoStats {
         IoStats::new(
             std::mem::take(&mut self.main_ring.borrow_mut().stats),
-            std::mem::take(&mut self.latency_ring.borrow_mut().stats),
-            std::mem::take(&mut self.poll_ring.borrow_mut().stats),
+            std::mem::take(&mut self.latency_ring.borrow_mut().stats.clone()),
+            std::mem::take(&mut self.poll_ring.borrow_mut().stats.clone()),
         )
     }
 
@@ -1757,19 +1769,19 @@ impl Reactor {
             .borrow_mut()
             .task_queue_stats
             .get_mut(h)
-            .map(std::mem::take);
+            .map(|x| std::mem::take(x));
         let lat = self
             .latency_ring
             .borrow_mut()
             .task_queue_stats
             .get_mut(h)
-            .map(std::mem::take);
+            .map(|x| std::mem::take(x));
         let poll = self
             .poll_ring
             .borrow_mut()
             .task_queue_stats
             .get_mut(h)
-            .map(std::mem::take);
+            .map(|x| std::mem::take(x));
 
         if let (None, None, None) = (&main, &lat, &poll) {
             None

@@ -107,7 +107,6 @@ where
     /// [`seal`]: ImmutableFilePreSealSink::seal
     /// [`build_sink`]: ImmutableFileBuilder::build_sink
     /// [`build_existing`]: ImmutableFileBuilder::build_existing
-    #[must_use = "The builder must be built to be useful"]
     pub fn new(fname: P) -> Self {
         Self {
             path: fname,
@@ -127,7 +126,6 @@ where
     /// more memory usage.
     ///
     /// [`ImmutableFile`]: ImmutableFile
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_sequential_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
         self
@@ -144,7 +142,6 @@ where
     ///
     /// [`ImmutableFile`]: ImmutableFile
     /// [`ImmutableFilePreSealSink`]: ImmutableFilePreSealSink
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_sync_on_close_disabled(mut self, flush_disabled: bool) -> Self {
         self.flush_disabled = flush_disabled;
         self
@@ -154,7 +151,6 @@ where
     /// this [`ImmutableFile`]
     ///
     /// [`ImmutableFile`]: ImmutableFile
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
         self.buffer_size = buffer_size;
         self
@@ -162,7 +158,6 @@ where
 
     /// pre-allocates space in the filesystem to hold a file at least as big as
     /// the size argument.
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_pre_allocation(mut self, size: Option<u64>) -> Self {
         self.pre_allocate = size;
         self
@@ -182,7 +177,6 @@ where
     ///
     /// It is important not to set the extent size too big. Writes can fail
     /// otherwise if the extent can't be allocated.
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_hint_extent_size(mut self, size: Option<usize>) -> Self {
         self.hint_extent_size = size;
         self
@@ -417,9 +411,6 @@ impl ImmutableFile {
     }
 
     /// Rename this file.
-    ///
-    /// Note: this syscall might be issued in a background thread depending on
-    /// the system's capabilities.
     pub async fn rename<P: AsRef<Path>>(&self, new_path: P) -> Result<()> {
         self.stream_builder.file.rename(new_path).await
     }
@@ -429,9 +420,6 @@ impl ImmutableFile {
     /// The file does not have to be closed to be removed. Removing removes
     /// the name from the filesystem but the file will still be accessible for
     /// as long as it is open.
-    ///
-    /// Note: this syscall might be issued in a background thread depending on
-    /// the system's capabilities.
     pub async fn remove(&self) -> Result<()> {
         self.stream_builder.file.remove().await
     }

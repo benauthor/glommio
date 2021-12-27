@@ -176,7 +176,6 @@ pub(crate) struct Reactor {
     shared_channels: RefCell<SharedChannels>,
 
     io_scheduler: Rc<IoScheduler>,
-    record_io_latencies: bool,
 
     /// Whether there are events in the latency ring.
     ///
@@ -197,7 +196,6 @@ impl Reactor {
         notifier: Arc<SleepNotifier>,
         io_memory: usize,
         ring_depth: usize,
-        record_io_latencies: bool,
     ) -> Reactor {
         let sys = sys::Reactor::new(notifier, io_memory, ring_depth)
             .expect("cannot initialize I/O event notification");
@@ -207,7 +205,6 @@ impl Reactor {
             timers: RefCell::new(Timers::new()),
             shared_channels: RefCell::new(SharedChannels::new()),
             io_scheduler: Rc::new(IoScheduler::new()),
-            record_io_latencies,
             preempt_ptr_head,
             preempt_ptr_tail: preempt_ptr_tail as _,
         }
@@ -503,16 +500,12 @@ impl Reactor {
                     stats.file_deduped_bytes_read += *result as u64 * op_count;
                 }
             }),
-            latency: if self.record_io_latencies {
-                Some(|io_lat, sched_lat, stats| {
-                    stats.io_latency_us.add(io_lat.as_micros() as f64);
-                    stats
-                        .post_reactor_io_scheduler_latency_us
-                        .add(sched_lat.as_micros() as f64)
-                })
-            } else {
-                None
-            },
+            latency: Some(|io_lat, sched_lat, stats| {
+                stats.io_latency_us.add(io_lat.as_micros() as f64);
+                stats
+                    .post_reactor_io_scheduler_latency_us
+                    .add(sched_lat.as_micros() as f64)
+            }),
         };
 
         let source = self.new_source(raw, SourceType::Read(pollable, None), Some(stats));
@@ -547,16 +540,12 @@ impl Reactor {
                 }
             }),
             reused: None,
-            latency: if self.record_io_latencies {
-                Some(|io_lat, sched_lat, stats| {
-                    stats.io_latency_us.add(io_lat.as_micros() as f64);
-                    stats
-                        .post_reactor_io_scheduler_latency_us
-                        .add(sched_lat.as_micros() as f64)
-                })
-            } else {
-                None
-            },
+            latency: Some(|io_lat, sched_lat, stats| {
+                stats.io_latency_us.add(io_lat.as_micros() as f64);
+                stats
+                    .post_reactor_io_scheduler_latency_us
+                    .add(sched_lat.as_micros() as f64)
+            }),
         };
 
         let source = self.new_source(
@@ -740,6 +729,10 @@ impl Reactor {
         processed
     }
 
+    fn flush_syscall_thread(&self) -> usize {
+        self.sys.flush_syscall_thread()
+    }
+
     pub(crate) fn process_shared_channels_by_id(&self, id: u64) -> usize {
         match self.shared_channels.borrow_mut().wakers_map.get_mut(&id) {
             Some(wakers) => {
@@ -762,47 +755,37 @@ impl Reactor {
     ///
     /// This doesn't ever sleep, and does not touch the preemption timer.
     pub(crate) fn spin_poll_io(&self) -> io::Result<bool> {
-        let mut woke = 0;
-        // any duration, just so we land in the latency ring
+        Ok(self.process_local_events()?.1 + self.process_external_events() > 0)
+    }
+
+    fn process_external_events(&self) -> usize {
+        self.process_shared_channels() + self.flush_syscall_thread()
+    }
+
+    fn process_local_events(&self) -> io::Result<(Option<Duration>, usize)> {
+        let (next_timer, mut woke) = self.process_timers();
         self.sys
             .rush_dispatch(Some(Latency::Matters(Duration::from_secs(1))), &mut woke)?;
         self.sys
             .rush_dispatch(Some(Latency::NotImportant), &mut woke)?;
         self.sys.rush_dispatch(None, &mut woke)?;
-        woke += self.process_timers().1;
-        woke += self.process_shared_channels();
-        woke += self.sys.flush_syscall_thread();
 
-        Ok(woke > 0)
-    }
-
-    fn process_external_events(&self) -> (Option<Duration>, usize) {
-        let (next_timer, mut woke) = self.process_timers();
-        woke += self.process_shared_channels();
-        (next_timer, woke)
+        Ok((next_timer, woke))
     }
 
     /// Processes new events, blocking until the first event or the timeout.
     pub(crate) fn react(&self, timeout: impl Fn() -> Option<Duration>) -> io::Result<()> {
         // Process ready timers.
-        let (next_timer, woke) = self.process_external_events();
+        let (next_timer, woke) = self.process_timers();
 
         // Block on I/O events.
         match self
             .sys
-            .wait(timeout, next_timer, woke, || self.process_shared_channels())
+            .wait(timeout, next_timer, woke, || self.process_external_events())
         {
-            // Don't wait for the next loop to process timers or shared channels
-            Ok(true) => {
-                self.process_external_events();
-                Ok(())
-            }
-
-            Ok(false) => Ok(()),
-
+            Ok(_) => Ok(()),
             // The syscall was interrupted.
             Err(err) if err.kind() == io::ErrorKind::Interrupted => Ok(()),
-
             // An actual error occurred.
             Err(err) => Err(err),
         }

@@ -338,7 +338,6 @@ impl CpuSet {
     ///
     /// println!("The filtered CPUs are: {:#?}", cpus);
     /// ```
-    #[must_use]
     pub fn filter<F>(mut self, f: F) -> Self
     where
         F: FnMut(&CpuLocation) -> bool,

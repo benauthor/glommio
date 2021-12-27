@@ -1,102 +1,139 @@
-use futures::join;
-use glommio::prelude::*;
+use futures_lite::{stream, AsyncWriteExt, StreamExt};
+use glommio::{
+    io::{ImmutableFile, ImmutableFileBuilder},
+    LocalExecutorBuilder,
+    Placement,
+};
+use rand::Rng;
 use std::{
-    cell::RefCell,
-    rc::Rc,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
-/// Glommio is a cooperative thread per core system so once you start
-/// processing a future it will run it to completion. This is not great
-/// for latency, and may be outright wrong if you have tasks that may
-/// spin forever before returning, like a long-lived server.
-///
-/// Applications using Glommio are then expected to be well-behaved and
-/// explicitly yield control if they are going to do something that may take
-/// too long (that is usually a loop!)
-///
-/// There are three ways of yielding control:
-///
-///  * [`glommio::executor().yield_if_needed()`], which will yield if the
-///    current task queue has run for too long. What "too long" means is an
-///    implementation detail, but it will be always somehow related to the
-///    latency guarantees that the task queues want to uphold in their
-///    [`Latency::Matters`] parameter (or [`Latency::NotImportant`]). To check
-///    whether preemption is needed without yielding automatically, use
-///    [`glommio::executor().need_preempt()`].
-///
-///  * [`glommio::executor().yield_task_queue_now()`], works like
-///    yield_if_needed() but yields unconditionally.
-///
-///  * [`glommio::executor().yield_now()`], which unconditional yield the
-///    current task within the current task queue, forcing the scheduler to run
-///    another task on the same task queue. This is equivalent to returning
-///    `Poll::Pending` and waking up the current task.
-///
-/// Because [`yield_if_needed()`] returns a future that has to be .awaited,
-/// it cannot be used in situations where .await is illegal. For
-/// instance, if we are holding a borrow. For those, one can call
-/// [`need_preempt()`] which will tell you if yielding is needed, and
-/// then explicitly yield with [`yield_task_queue_now()`].
 fn main() {
-    let handle = LocalExecutorBuilder::default()
+    let handle = LocalExecutorBuilder::new(Placement::Fixed(0))
+        // .spin_before_park(std::time::Duration::from_secs(1))
         .spawn(|| async move {
-            let tq1 = glommio::executor().create_task_queue(
-                Shares::default(),
-                Latency::Matters(Duration::from_millis(10)),
-                "tq1",
-            );
-            let tq2 = glommio::executor().create_task_queue(
-                Shares::default(),
-                Latency::Matters(Duration::from_millis(10)),
-                "tq2",
-            );
-            let shared_value = Rc::new(RefCell::new(0u64));
+            // glommio::spawn_local(async move {
+            let filename = match std::env::var("GLOMMIO_TEST_POLLIO_ROOTDIR") {
+                Ok(path) => {
+                    let mut path = PathBuf::from(path);
+                    path.push("benchfile");
+                    path
+                }
+                Err(_) => panic!("please set 'GLOMMIO_TEST_POLLIO_ROOTDIR'"),
+            };
 
-            let value = shared_value.clone();
-            let j1 = glommio::spawn_local_into(
-                async move {
-                    let start = Instant::now();
-                    let mut lap = start;
-                    while start.elapsed().as_millis() < 50 {
-                        glommio::yield_if_needed().await;
-                        if lap.elapsed().as_millis() > 1 {
-                            lap = Instant::now();
-                            println!("tq1: 1ms");
-                        }
-                    }
-                    println!("tq1: Final value of v: {}", *(value.borrow()));
-                },
-                tq1,
-            )
-            .unwrap();
+            {
+                let _ = std::fs::remove_file(&filename);
+                let mut sink = ImmutableFileBuilder::new(&filename)
+                    .with_buffer_size(512 << 10)
+                    .with_pre_allocation(Some(64 << 20))
+                    .build_sink()
+                    .await
+                    .unwrap();
 
-            let value = shared_value.clone();
-            let j2 = glommio::spawn_local_into(
-                async move {
-                    let start = Instant::now();
-                    let mut lap = start;
-                    while start.elapsed().as_millis() < 50 {
-                        let mut v = value.borrow_mut();
-                        if glommio::executor().need_preempt() {
-                            drop(v);
-                            glommio::executor().yield_task_queue_now().await;
-                        } else {
-                            *v += 1;
-                        }
-                        if lap.elapsed().as_millis() > 1 {
-                            lap = Instant::now();
-                            println!("tq2: 1ms");
-                        }
-                    }
-                    println!("tq2: Final value of v: {}", *(value.borrow()));
-                },
-                tq2,
-            )
-            .unwrap();
+                let contents = vec![1; 512 << 10];
+                for _ in 0..(64 << 20) / contents.len() {
+                    sink.write_all(&contents).await.unwrap();
+                }
+                let file = sink.seal().await.unwrap();
 
-            join!(j1, j2);
+                for x in 0..4 {
+                    run_bench(&format!("iteration: {}", x), &file, 1_000_000, 4096).await;
+                }
+            };
+            // })
+            // .await;
         })
         .unwrap();
     handle.join().unwrap();
+}
+
+async fn run_bench(name: &str, file: &ImmutableFile, count: usize, size: usize) {
+    struct IOVec<T: glommio::io::IoVec> {
+        vec: T,
+        at: Instant,
+    }
+
+    impl<T: glommio::io::IoVec> glommio::io::IoVec for IOVec<T> {
+        fn pos(&self) -> u64 {
+            self.vec.pos()
+        }
+
+        fn size(&self) -> usize {
+            self.vec.size()
+        }
+    }
+
+    let mut rand = rand::thread_rng();
+    let blocks = file.file_size() / size as u64 - 1;
+    let mut hist =
+        sketches_ddsketch::DDSketch::new(sketches_ddsketch::Config::new(0.01, 2048, 1.0e-9));
+    let started_at = Instant::now();
+
+    file.read_many(
+        stream::repeat_with(|| IOVec {
+            vec: (rand.gen_range(0..blocks) * size as u64, size),
+            at: Instant::now(),
+        })
+        .take(count),
+        0,
+        Some(0),
+    )
+    .with_concurrency(128)
+    .for_each(|res| {
+        let (io, _) = res.unwrap();
+        hist.add(io.at.elapsed().as_micros() as f64);
+    })
+    .await;
+
+    assert_eq!(hist.count() as usize, count);
+
+    println!("\n --- {} ---", name);
+    println!(
+        "performed {} read IO at {} IOPS (took {:.2}s)",
+        count,
+        (count as f64 / started_at.elapsed().as_secs_f64()) as usize,
+        started_at.elapsed().as_secs_f64()
+    );
+    println!(
+        "[measured] lat (end-to-end):\t\t\t\t\t\tmin: {: >4}us\tp50: {: >4}us\tp99: {: \
+         >4}us\tp99.9: {: >4}us\tp99.99: {: >4}us\tp99.999: {: >4}us\t max: {: >4}us",
+        Duration::from_micros(hist.min().unwrap() as u64).as_micros(),
+        Duration::from_micros(hist.quantile(0.5).unwrap().unwrap() as u64).as_micros(),
+        Duration::from_micros(hist.quantile(0.99).unwrap().unwrap() as u64).as_micros(),
+        Duration::from_micros(hist.quantile(0.999).unwrap().unwrap() as u64).as_micros(),
+        Duration::from_micros(hist.quantile(0.9999).unwrap().unwrap() as u64).as_micros(),
+        Duration::from_micros(hist.quantile(0.99999).unwrap().unwrap() as u64).as_micros(),
+        Duration::from_micros(hist.max().unwrap() as u64).as_micros(),
+    );
+
+    let io_stats = glommio::executor().io_stats().all_rings();
+
+    let sk = io_stats.post_reactor_io_scheduler_latency_us().clone();
+    println!(
+        "[measured] sched lat (from fulfilled to consumed):\tmin: {: >4}us\tp50: {: >4}us\tp99: \
+         {: >4}us\tp99.9: {: >4}us\tp99.99: {: >4}us\tp99.999: {: >4}us\t max: {: >4}us",
+        Duration::from_micros(sk.min().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.5).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.99).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.999).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.9999).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.99999).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.max().unwrap_or_default() as u64).as_micros(),
+    );
+
+    let sk = io_stats.io_latency_us().clone();
+    println!(
+        "[measured] IO lat (time in ring):\t\t\t\t\tmin: {: >4}us\tp50: {: >4}us\tp99: {: \
+         >4}us\tp99.9: {: >4}us\tp99.99: {: >4}us\tp99.999: {: >4}us\t max: {: >4}us",
+        Duration::from_micros(sk.min().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.5).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.99).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.999).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.9999).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.quantile(0.99999).unwrap().unwrap_or_default() as u64).as_micros(),
+        Duration::from_micros(sk.max().unwrap_or_default() as u64).as_micros(),
+    );
 }

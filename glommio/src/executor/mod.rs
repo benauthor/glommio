@@ -98,12 +98,18 @@ pub(crate) fn executor_id() -> Option<usize> {
     }
 }
 
-#[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 /// An opaque handle indicating in which queue a group of tasks will execute.
 /// Tasks in the same group will execute in FIFO order but no guarantee is made
 /// about ordering on different task queues.
 pub struct TaskQueueHandle {
     index: usize,
+}
+
+impl Default for TaskQueueHandle {
+    fn default() -> Self {
+        TaskQueueHandle { index: 0 }
+    }
 }
 
 impl TaskQueueHandle {
@@ -120,7 +126,7 @@ pub(crate) struct TaskQueue {
     shares: Shares,
     vruntime: u64,
     io_requirements: IoRequirements,
-    _name: String,
+    name: String,
     last_adjustment: Instant,
     // for dynamic shares classes
     yielded: bool,
@@ -165,7 +171,7 @@ impl TaskQueue {
             shares,
             vruntime: 0,
             io_requirements: ioreq,
-            _name: name.into(),
+            name: name.into(),
             last_adjustment: Instant::now(),
             yielded: false,
         }))
@@ -436,8 +442,6 @@ pub struct LocalExecutorBuilder {
     ring_depth: usize,
     /// How often to yield to other task queues
     preempt_timer_duration: Duration,
-    /// Whether to record the latencies of individual IO requests
-    record_io_latencies: bool,
 }
 
 impl LocalExecutorBuilder {
@@ -454,12 +458,10 @@ impl LocalExecutorBuilder {
             io_memory: DEFAULT_IO_MEMORY,
             ring_depth: DEFAULT_RING_SUBMISSION_DEPTH,
             preempt_timer_duration: DEFAULT_PREEMPT_TIMER,
-            record_io_latencies: false,
         }
     }
 
     /// Spin for duration before parking a reactor
-    #[must_use = "The builder must be built to be useful"]
     pub fn spin_before_park(mut self, spin: Duration) -> LocalExecutorBuilder {
         self.spin_before_park = Some(spin);
         self
@@ -467,7 +469,6 @@ impl LocalExecutorBuilder {
 
     /// Names the thread-to-be. Currently, the name is used for identification
     /// only in panic messages.
-    #[must_use = "The builder must be built to be useful"]
     pub fn name(mut self, name: &str) -> LocalExecutorBuilder {
         self.name = String::from(name);
         self
@@ -480,7 +481,6 @@ impl LocalExecutorBuilder {
     ///
     /// The system will always try to allocate at least 64 kiB for I/O memory,
     /// and the default is 10 MiB.
-    #[must_use = "The builder must be built to be useful"]
     pub fn io_memory(mut self, io_memory: usize) -> LocalExecutorBuilder {
         self.io_memory = io_memory;
         self
@@ -491,7 +491,6 @@ impl LocalExecutorBuilder {
     /// greater number of IO requests to the kernel at once.
     ///
     /// Values above zero are valid and the default is 128.
-    #[must_use = "The builder must be built to be useful"]
     pub fn ring_depth(mut self, ring_depth: usize) -> LocalExecutorBuilder {
         assert!(ring_depth > 0, "ring depth should be strictly positive");
         self.ring_depth = ring_depth;
@@ -509,17 +508,8 @@ impl LocalExecutorBuilder {
     ///
     /// [`need_preempt`]: ExecutorProxy::need_preempt
     /// [`Latency`]: crate::Latency
-    #[must_use = "The builder must be built to be useful"]
     pub fn preempt_timer(mut self, dur: Duration) -> LocalExecutorBuilder {
         self.preempt_timer_duration = dur;
-        self
-    }
-
-    /// Whether to record the latencies of individual IO requests as part of the
-    /// IO stats. Recording latency can be expensive. Disabled by default.
-    #[must_use = "The builder must be built to be useful"]
-    pub fn record_io_latencies(mut self, enabled: bool) -> LocalExecutorBuilder {
-        self.record_io_latencies = enabled;
         self
     }
 
@@ -540,7 +530,6 @@ impl LocalExecutorBuilder {
             self.io_memory,
             self.ring_depth,
             self.preempt_timer_duration,
-            self.record_io_latencies,
             cpu_set_gen.next().cpu_binding(),
             self.spin_before_park,
         )?;
@@ -604,7 +593,6 @@ impl LocalExecutorBuilder {
         let ring_depth = self.ring_depth;
         let preempt_timer_duration = self.preempt_timer_duration;
         let spin_before_park = self.spin_before_park;
-        let record_io_latencies = self.record_io_latencies;
 
         Builder::new()
             .name(name)
@@ -614,7 +602,6 @@ impl LocalExecutorBuilder {
                     io_memory,
                     ring_depth,
                     preempt_timer_duration,
-                    record_io_latencies,
                     cpu_set_gen.next().cpu_binding(),
                     spin_before_park,
                 )
@@ -677,8 +664,6 @@ pub struct LocalExecutorPoolBuilder {
     preempt_timer_duration: Duration,
     /// Indicates a policy by which [`LocalExecutor`]s are bound to CPUs.
     placement: PoolPlacement,
-    /// Whether to record the latencies of individual IO requests
-    record_io_latencies: bool,
 }
 
 impl LocalExecutorPoolBuilder {
@@ -695,14 +680,12 @@ impl LocalExecutorPoolBuilder {
             ring_depth: DEFAULT_RING_SUBMISSION_DEPTH,
             preempt_timer_duration: DEFAULT_PREEMPT_TIMER,
             placement,
-            record_io_latencies: false,
         }
     }
 
     /// Please see documentation under
     /// [`LocalExecutorBuilder::spin_before_park`] for details.  The setting
     /// is applied to all executors in the pool.
-    #[must_use = "The builder must be built to be useful"]
     pub fn spin_before_park(mut self, spin: Duration) -> Self {
         self.spin_before_park = Some(spin);
         self
@@ -713,7 +696,6 @@ impl LocalExecutorPoolBuilder {
     /// that when a thread is spawned, the `name` is combined with a hyphen
     /// and numeric id (e.g. `myname-1`) such that each thread has a unique
     /// name.
-    #[must_use = "The builder must be built to be useful"]
     pub fn name(mut self, name: &str) -> Self {
         self.name = String::from(name);
         self
@@ -721,7 +703,6 @@ impl LocalExecutorPoolBuilder {
 
     /// Please see documentation under [`LocalExecutorBuilder::io_memory`] for
     /// details.  The setting is applied to all executors in the pool.
-    #[must_use = "The builder must be built to be useful"]
     pub fn io_memory(mut self, io_memory: usize) -> Self {
         self.io_memory = io_memory;
         self
@@ -729,7 +710,6 @@ impl LocalExecutorPoolBuilder {
 
     /// Please see documentation under [`LocalExecutorBuilder::ring_depth`] for
     /// details.  The setting is applied to all executors in the pool.
-    #[must_use = "The builder must be built to be useful"]
     pub fn ring_depth(mut self, ring_depth: usize) -> Self {
         assert!(ring_depth > 0, "ring depth should be strictly positive");
         self.ring_depth = ring_depth;
@@ -738,17 +718,8 @@ impl LocalExecutorPoolBuilder {
 
     /// Please see documentation under [`LocalExecutorBuilder::preempt_timer`]
     /// for details.  The setting is applied to all executors in the pool.
-    #[must_use = "The builder must be built to be useful"]
     pub fn preempt_timer(mut self, dur: Duration) -> Self {
         self.preempt_timer_duration = dur;
-        self
-    }
-
-    /// Whether to record the latencies of individual IO requests as part of the
-    /// IO stats. Recording latency can be expensive. Disabled by default.
-    #[must_use = "The builder must be built to be useful"]
-    pub fn record_io_latencies(mut self, enabled: bool) -> Self {
-        self.record_io_latencies = enabled;
         self
     }
 
@@ -813,7 +784,6 @@ impl LocalExecutorPoolBuilder {
             let ring_depth = self.ring_depth;
             let preempt_timer_duration = self.preempt_timer_duration;
             let spin_before_park = self.spin_before_park;
-            let record_io_latencies = self.record_io_latencies;
             let latch = Latch::clone(latch);
 
             move || {
@@ -825,7 +795,6 @@ impl LocalExecutorPoolBuilder {
                         io_memory,
                         ring_depth,
                         preempt_timer_duration,
-                        record_io_latencies,
                         cpu_binding,
                         spin_before_park,
                     )
@@ -959,7 +928,6 @@ impl LocalExecutor {
         io_memory: usize,
         ring_depth: usize,
         preempt_timer: Duration,
-        record_io_latencies: bool,
         cpu_binding: Option<impl IntoIterator<Item = usize>>,
         mut spin_before_park: Option<Duration>,
     ) -> Result<LocalExecutor> {
@@ -982,12 +950,7 @@ impl LocalExecutor {
             queues: Rc::new(RefCell::new(queues)),
             parker: p,
             id: notifier.id(),
-            reactor: Rc::new(reactor::Reactor::new(
-                notifier,
-                io_memory,
-                ring_depth,
-                record_io_latencies,
-            )),
+            reactor: Rc::new(reactor::Reactor::new(notifier, io_memory, ring_depth)),
         })
     }
 
@@ -1121,6 +1084,10 @@ impl LocalExecutor {
                 return false;
             } else {
                 ran = true;
+            }
+
+            if self.reactor.sys.needs_expedited_kernel_enter() {
+                return ran;
             }
         }
         ran
@@ -2560,24 +2527,23 @@ mod test {
                 "testlat",
             );
 
-            let first_started = Rc::new(RefCell::new(0));
-            let second_status = Rc::new(RefCell::new(0));
+            let first_started = Rc::new(RefCell::new(false));
+            let second_status = Rc::new(RefCell::new(false));
 
             let first = local_ex
                 .spawn_into(
                     crate::enclose! { (first_started, second_status)
                         async move {
+                            *(first_started.borrow_mut()) = true;
+
                             let start = Instant::now();
                             // Now busy loop and make sure that we yield when we have too.
                             loop {
-                                let mut count = first_started.borrow_mut();
-                                *count += 1;
-
                                 if start.elapsed().as_millis() >= 99 {
                                     break;
                                 }
 
-                                if *count < *(second_status.borrow()) {
+                                if *(second_status.borrow()) {
                                     panic!("I was preempted but should not have been");
                                 }
                                 crate::yield_if_needed().await;
@@ -2594,14 +2560,13 @@ mod test {
                         async move {
                             // In case we are executed first, yield to the the other task
                             loop {
-                                let mut count = second_status.borrow_mut();
-                                *count += 1;
-                                if *count >= *(first_started.borrow()) {
+                                if !(*(first_started.borrow())) {
                                     crate::executor().yield_task_queue_now().await;
                                 } else {
                                     break;
                                 }
                             }
+                            *(second_status.borrow_mut()) = true;
                         }
                     },
                     tq2,
@@ -3169,7 +3134,7 @@ mod test {
 
         for nn in 1..2 {
             let nr_execs = nn * cpu_set.len();
-            let mut placements = vec![
+            let placements = [
                 PoolPlacement::Unbound(nr_execs),
                 PoolPlacement::Fenced(nr_execs, cpu_set.clone()),
                 PoolPlacement::MaxSpread(nr_execs, None),
@@ -3178,7 +3143,7 @@ mod test {
                 PoolPlacement::MaxPack(nr_execs, Some(cpu_set.clone())),
             ];
 
-            for pp in placements.drain(..) {
+            for pp in std::array::IntoIter::new(placements) {
                 let ids = Arc::new(Mutex::new(HashMap::new()));
                 let cpus = Arc::new(Mutex::new(HashMap::new()));
                 let cpu_hard_bind =
@@ -3233,7 +3198,7 @@ mod test {
 
         // test: confirm that we can always get shards up to the # of cpus
         {
-            let mut placements = vec![
+            let placements = [
                 (false, PoolPlacement::Unbound(cpu_set.len())),
                 (false, PoolPlacement::Fenced(cpu_set.len(), cpu_set.clone())),
                 (true, PoolPlacement::MaxSpread(cpu_set.len(), None)),
@@ -3248,7 +3213,7 @@ mod test {
                 ),
             ];
 
-            for (_shard_limited, p) in placements.drain(..) {
+            for (_shard_limited, p) in std::array::IntoIter::new(placements) {
                 LocalExecutorPoolBuilder::new(p)
                     .on_all_shards(|| async move {})
                     .unwrap()
@@ -3258,7 +3223,7 @@ mod test {
 
         // test: confirm that some placements fail when shards are # of cpus + 1
         {
-            let mut placements = vec![
+            let placements = [
                 (false, PoolPlacement::Unbound(1 + cpu_set.len())),
                 (
                     false,
@@ -3276,7 +3241,7 @@ mod test {
                 ),
             ];
 
-            for (shard_limited, p) in placements.drain(..) {
+            for (shard_limited, p) in std::array::IntoIter::new(placements) {
                 match LocalExecutorPoolBuilder::new(p).on_all_shards(|| async move {}) {
                     Ok(handles) => {
                         handles.join_all();

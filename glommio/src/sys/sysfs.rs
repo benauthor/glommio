@@ -35,7 +35,6 @@ impl FromStr for StorageCache {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct BlockDevice {
     memory_device: bool,
     rotational: bool,
@@ -211,7 +210,7 @@ impl ListIterator {
             .get(beg..)
             .expect("invalid range: this is a bug")
             .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(self.list_str.len() - beg);
+            .unwrap_or_else(|| self.list_str.len() - beg);
 
         self.list_str
             .get(beg..self.idx)
@@ -241,7 +240,7 @@ impl ListIterator {
             .get(self.idx..idx_max)
             .expect("invalid range: this is a bug")
             .find(|c| c != ',' && !is_space(c))
-            .unwrap_or(idx_max - self.idx);
+            .unwrap_or_else(|| idx_max - self.idx);
     }
 
     fn skip_char(&mut self, chr: char) -> bool {

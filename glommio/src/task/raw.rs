@@ -370,15 +370,16 @@ where
             let raw = Self::from_ptr(ptr);
             Self::increment_references(&mut *(raw.header as *mut Header));
 
+            let guard;
             // Calling of schedule functions itself does not increment references,
             // if the schedule function has captured variables, increment references
             // so if task being dropped inside schedule function , function itself
             // will keep valid data till the end of execution.
-            let guard = if mem::size_of::<S>() > 0 {
-                Some(Waker::from_raw(Self::clone_waker(ptr)))
+            if mem::size_of::<S>() > 0 {
+                guard = Some(Waker::from_raw(Self::clone_waker(ptr)));
             } else {
-                None
-            };
+                guard = None;
+            }
 
             let task = Task {
                 raw_task: NonNull::new_unchecked(ptr as *mut ()),

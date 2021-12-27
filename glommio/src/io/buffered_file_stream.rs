@@ -260,7 +260,6 @@ impl StreamReaderBuilder {
     /// Reads from the [`StreamReader`] will start from this position
     ///
     /// [`StreamReader`]: struct.StreamReader.html
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_start_pos(mut self, start: u64) -> Self {
         self.start = start;
         self
@@ -272,7 +271,6 @@ impl StreamReaderBuilder {
     /// file is larger.
     ///
     /// [`StreamReader`]: struct.StreamReader.html
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_end_pos(mut self, end: u64) -> Self {
         self.end = end;
         self
@@ -281,7 +279,6 @@ impl StreamReaderBuilder {
     /// Define the buffer size that will be used by the [`StreamReader`]
     ///
     /// [`StreamReader`]: struct.StreamReader.html
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
         self.buffer_size = std::cmp::max(buffer_size, 1);
         self
@@ -334,7 +331,6 @@ impl StreamWriterBuilder {
     /// Chooses whether to issue a sync operation when closing the file
     /// (default enabled). Disabling this is dangerous and in most cases may
     /// lead to data loss upon power failure.
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_sync_on_close_disabled(mut self, flush_disabled: bool) -> Self {
         self.sync_on_close = !flush_disabled;
         self
@@ -343,7 +339,6 @@ impl StreamWriterBuilder {
     /// Define the buffer size that will be used by the [`StreamWriter`]
     ///
     /// [`StreamWriter`]: struct.StreamWriter.html
-    #[must_use = "The builder must be built to be useful"]
     pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
         self.buffer_size = std::cmp::max(buffer_size, 1);
         self

@@ -63,7 +63,7 @@ pub struct LocalSender<T> {
 /// [`StreamExt`]: https://docs.rs/futures/0.3.6/futures/stream/trait.StreamExt.html
 pub struct LocalReceiver<T> {
     channel: LocalChannel<T>,
-    _node: WaiterNode,
+    node: WaiterNode,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -420,7 +420,7 @@ impl<T> LocalChannel<T> {
             },
             LocalReceiver {
                 channel,
-                _node: WaiterNode {
+                node: WaiterNode {
                     waker: RefCell::new(None),
                     link: LinkedListLink::new(),
                     kind: RefCell::new(None),

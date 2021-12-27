@@ -115,5 +115,5 @@ name = "echo"
 harness = false
 
 [[bench]]
-name = "competing_io"
+name = "read_many"
 harness = false

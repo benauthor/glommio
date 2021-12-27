@@ -378,12 +378,10 @@ macro_rules! to_io_error {
 #[cfg(test)]
 macro_rules! test_executor {
     ($( $fut:expr ),+ ) => {
+    use crate::executor::{LocalExecutor};
     use futures::future::join_all;
 
-    let local_ex = crate::executor::LocalExecutorBuilder::new(crate::executor::Placement::Unbound)
-            .record_io_latencies(true)
-            .make()
-            .unwrap();
+    let local_ex = LocalExecutor::default();
     local_ex.run(async move {
         let mut joins = Vec::new();
         $(
@@ -557,14 +555,14 @@ pub enum Latency {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IoRequirements {
     latency_req: Latency,
-    _io_handle: usize,
+    io_handle: usize,
 }
 
 impl Default for IoRequirements {
     fn default() -> Self {
         Self {
             latency_req: Latency::NotImportant,
-            _io_handle: 0,
+            io_handle: 0,
         }
     }
 }
@@ -573,7 +571,7 @@ impl IoRequirements {
     fn new(latency: Latency, handle: usize) -> Self {
         Self {
             latency_req: latency,
-            _io_handle: handle,
+            io_handle: handle,
         }
     }
 }

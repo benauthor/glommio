@@ -373,17 +373,11 @@ impl DmaFile {
     }
 
     /// Truncates a file to the specified size.
-    ///
-    /// Note: this syscall might be issued in a background thread depending on
-    /// the system's capabilities.
     pub async fn truncate(&self, size: u64) -> Result<()> {
         self.file.truncate(size).await
     }
 
     /// Rename this file.
-    ///
-    /// Note: this syscall might be issued in a background thread depending on
-    /// the system's capabilities.
     pub async fn rename<P: AsRef<Path>>(&self, new_path: P) -> Result<()> {
         self.file.rename(new_path).await
     }
@@ -393,9 +387,6 @@ impl DmaFile {
     /// The file does not have to be closed to be removed. Removing removes
     /// the name from the filesystem but the file will still be accessible for
     /// as long as it is open.
-    ///
-    /// Note: this syscall might be issued in a background thread depending on
-    /// the system's capabilities.
     pub async fn remove(&self) -> Result<()> {
         self.file.remove().await
     }
